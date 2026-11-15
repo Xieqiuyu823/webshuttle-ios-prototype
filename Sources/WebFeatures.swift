@@ -146,6 +146,9 @@ struct WebFeaturesView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("自定义代理") }
                 Section {
+                    NavigationLink("原节点连接诊断") { OriginalNodeDiagnosticsView() }
+                } header: { Text("WebShuttle 原节点") }
+                Section {
                     NavigationLink("管理用户脚本") { UserScriptsView() }
                     Text("仅运行可信脚本；脚本可以读取和修改页面。")
                         .font(.footnote).foregroundStyle(.secondary)
