@@ -1,0 +1,33 @@
+name: BrowserPrototype
+options:
+  bundleIdPrefix: dev.browserprototype
+  deploymentTarget:
+    iOS: '17.0'
+settings:
+  base:
+    SWIFT_VERSION: '5.0'
+targets:
+  BrowserPrototype:
+    type: application
+    platform: iOS
+    sources:
+      - Sources
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.browserprototype.ios
+        PRODUCT_NAME: BrowserPrototype
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Browser Prototype
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        TARGETED_DEVICE_FAMILY: '1,2'
+        SUPPORTS_MACCATALYST: NO
+        IPHONEOS_DEPLOYMENT_TARGET: '17.0'
+schemes:
+  BrowserPrototype:
+    build:
+      targets:
+        BrowserPrototype: all
+    run:
+      config: Debug
+    archive:
+      config: Release
