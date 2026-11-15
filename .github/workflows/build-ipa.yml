@@ -34,6 +34,15 @@ jobs:
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/ipa/Payload"
           cp -R "$RUNNER_TEMP/browser-build/Build/Products/Release-iphoneos/BrowserPrototype.app" "$RUNNER_TEMP/ipa/Payload/"
+          python3 - "$RUNNER_TEMP/ipa/Payload/BrowserPrototype.app/Info.plist" <<'PY'
+          import plistlib, sys
+          with open(sys.argv[1], 'rb') as f:
+              info = plistlib.load(f)
+          icons = info.get('CFBundleIcons', {}).get('CFBundlePrimaryIcon', {}).get('CFBundleIconFiles', [])
+          if not icons:
+              raise SystemExit('App icon is missing from Info.plist')
+          print('App icon references:', ', '.join(icons))
+          PY
           (cd "$RUNNER_TEMP/ipa" && zip -qry "$GITHUB_WORKSPACE/BrowserPrototype-unsigned.ipa" Payload)
       - name: Upload unsigned IPA
         uses: actions/upload-artifact@v4

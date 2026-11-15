@@ -21,6 +21,7 @@ final class OriginalNodeDiagnostics: ObservableObject {
     @Published var message = "尚未获取节点。"
     @Published var results: [String: String] = [:]
     @Published private(set) var readyNodes: Set<String> = []
+    @Published private(set) var probingNodes: Set<String> = []
     @Published private(set) var activatingNodeID: String?
     private var nodeKeys: [String: UInt8] = [:]
     private var connections: [String: NWConnection] = [:]
@@ -28,8 +29,12 @@ final class OriginalNodeDiagnostics: ObservableObject {
 
     func fetchNodes() {
         message = "正在获取官方节点列表…"
+        for connection in connections.values { connection.cancel() }
+        connections.removeAll()
+        probingNodes.removeAll()
         readyNodes.removeAll()
         nodeKeys.removeAll()
+        results.removeAll()
         guard let url = URL(string: "https://srv.webshuttle.org/api/service_hash?country_code=US&language_code=en&channel_code=google&device_code=&density=1&version_code=725") else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
             guard let data, error == nil, data.count < 1_000_000,
@@ -63,6 +68,7 @@ final class OriginalNodeDiagnostics: ObservableObject {
         connections[node.id]?.cancel()
         let connection = NWConnection(host: NWEndpoint.Host(node.host), port: port, using: .tcp)
         connections[node.id] = connection
+        probingNodes.insert(node.id)
         results[node.id] = "正在测试…"
         var done = false
         func finish(_ text: String, key: UInt8? = nil) {
@@ -71,6 +77,7 @@ final class OriginalNodeDiagnostics: ObservableObject {
             connection.cancel()
             guard connections[node.id] === connection else { return }
             connections[node.id] = nil
+            probingNodes.remove(node.id)
             if let key {
                 nodeKeys[node.id] = key
                 readyNodes.insert(node.id)
@@ -152,18 +159,27 @@ struct OriginalNodeDiagnosticsView: View {
             }
             Section("节点") {
                 ForEach(diagnostics.nodes) { node in
-                    VStack(alignment: .leading) {
-                        HStack {
-                            Text(node.country?.uppercased() ?? "节点")
-                            Spacer()
-                            Button("测试") { diagnostics.probe(node) }
-                        }
+                    VStack(alignment: .leading, spacing: 10) {
+                        Text(node.country?.uppercased() ?? "节点")
+                            .font(.headline)
                         Text(diagnostics.results[node.id] ?? "尚未测试").font(.caption).foregroundStyle(.secondary)
-                        if diagnostics.readyNodes.contains(node.id) {
-                            Button("启用此节点（实验）") { diagnostics.activate(node) }
-                                .disabled(diagnostics.activatingNodeID != nil)
+                        HStack(spacing: 12) {
+                            Button(diagnostics.probingNodes.contains(node.id) ? "测试中…" : "测试") {
+                                diagnostics.probe(node)
+                            }
+                            .buttonStyle(.bordered)
+                            .disabled(diagnostics.probingNodes.contains(node.id) || diagnostics.activatingNodeID != nil)
+
+                            Button("启用此节点") { diagnostics.activate(node) }
+                                .buttonStyle(.borderedProminent)
+                                .disabled(!diagnostics.readyNodes.contains(node.id) || diagnostics.activatingNodeID != nil)
+                        }
+                        if !diagnostics.readyNodes.contains(node.id) && !diagnostics.probingNodes.contains(node.id) {
+                            Text("请先点击测试；握手通过后可启用。")
+                                .font(.caption).foregroundStyle(.secondary)
                         }
                     }
+                    .padding(.vertical, 4)
                 }
             }
             Section {
