@@ -67,30 +67,36 @@ final class OriginalNodeDiagnostics: ObservableObject {
         }
         func receive(_ accumulated: Data = Data()) {
             connection.receive(minimumIncompleteLength: 1, maximumLength: 12 - accumulated.count) { content, _, complete, error in
-                var bytes = accumulated
-                if let content { bytes.append(content) }
-                if bytes.count == 12 {
-                    let b = [UInt8](bytes)
-                    finish(b[0] == 12 && b[9] == 0 && b[10] < 128 ? "握手探测通过（尚未验证网页代理）" : "节点拒绝或响应不兼容")
-                } else if complete || error != nil { finish("连接关闭或握手失败") }
-                else { receive(bytes) }
+                Task { @MainActor in
+                    var bytes = accumulated
+                    if let content { bytes.append(content) }
+                    if bytes.count == 12 {
+                        let b = [UInt8](bytes)
+                        finish(b[0] == 12 && b[9] == 0 && b[10] < 128 ? "握手探测通过（尚未验证网页代理）" : "节点拒绝或响应不兼容")
+                    } else if complete || error != nil { finish("连接关闭或握手失败") }
+                    else { receive(bytes) }
+                }
             }
         }
         connection.stateUpdateHandler = { state in
-            switch state {
-            case .ready:
-                var timestamp = UInt64(Date().timeIntervalSince1970 * 1000).bigEndian
-                var version = UInt32(725).bigEndian
-                var payload = Data([11])
-                withUnsafeBytes(of: &timestamp) { payload.append(contentsOf: $0) }
-                withUnsafeBytes(of: &version) { payload.append(contentsOf: $0) }
-                payload.append(contentsOf: self.fingerprint.utf8)
-                payload.append(0)
-                connection.send(content: payload, completion: .contentProcessed { error in
-                    if error != nil { finish("发送探测失败") } else { receive() }
-                })
-            case .failed: finish("无法连接节点")
-            default: break
+            Task { @MainActor in
+                switch state {
+                case .ready:
+                    var timestamp = UInt64(Date().timeIntervalSince1970 * 1000).bigEndian
+                    var version = UInt32(725).bigEndian
+                    var payload = Data([11])
+                    withUnsafeBytes(of: &timestamp) { payload.append(contentsOf: $0) }
+                    withUnsafeBytes(of: &version) { payload.append(contentsOf: $0) }
+                    payload.append(contentsOf: self.fingerprint.utf8)
+                    payload.append(0)
+                    connection.send(content: payload, completion: .contentProcessed { error in
+                        Task { @MainActor in
+                            if error != nil { finish("发送探测失败") } else { receive() }
+                        }
+                    })
+                case .failed: finish("无法连接节点")
+                default: break
+                }
             }
         }
         connection.start(queue: .main)
