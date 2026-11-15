@@ -8,6 +8,9 @@ import WebKit
 final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDelegate, WKUIDelegate {
     let id = UUID()
     let webView: WKWebView
+    let videoDetector: VideoDetector
+    let isPrivate: Bool
+    @Published var desktopMode: Bool
     @Published var title = "新标签页"
     @Published var address = ""
     @Published var canGoBack = false
@@ -19,8 +22,14 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     private let downloadManager: DownloadManager
     private var observations: [NSKeyValueObservation] = []
 
-    init(configuration: WKWebViewConfiguration, downloadManager: DownloadManager) {
+    init(configuration: WKWebViewConfiguration, downloadManager: DownloadManager, isPrivate: Bool = false, desktopMode: Bool = false) {
         self.downloadManager = downloadManager
+        self.isPrivate = isPrivate
+        self.desktopMode = desktopMode
+        let detector = VideoDetector()
+        self.videoDetector = detector
+        configuration.defaultWebpagePreferences.preferredContentMode = desktopMode ? .desktop : .mobile
+        detector.install(configuration: configuration)
         configuration.preferences.javaScriptCanOpenWindowsAutomatically = true
         webView = WKWebView(frame: .zero, configuration: configuration)
         super.init()
@@ -54,8 +63,14 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
         webView.load(URLRequest(url: url))
     }
 
+    func toggleDesktopMode() {
+        desktopMode.toggle()
+        webView.reload()
+    }
+
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         errorMessage = nil
+        videoDetector.reset()
     }
 
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -78,8 +93,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
-                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-        decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow)
+                 preferences: WKWebpagePreferences,
+                 decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        preferences.preferredContentMode = desktopMode ? .desktop : .mobile
+        decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor navigationResponse: WKNavigationResponse,
@@ -177,13 +194,14 @@ final class BrowserStore: ObservableObject {
 
     var selectedTab: BrowserTab? { tabs.first { $0.id == selectedID } }
 
-    func addTab(url: URL? = nil, select: Bool = true, completion: (() -> Void)? = nil) {
+    func addTab(url: URL? = nil, select: Bool = true, isPrivate: Bool = false, desktopMode: Bool = false, completion: (() -> Void)? = nil) {
         let generation = configurationGeneration
         let configuration = WKWebViewConfiguration()
+        if isPrivate { configuration.websiteDataStore = .nonPersistent() }
         WebFeatures.configure(configuration) { [weak self] in
             guard let self, self.configurationGeneration == generation else { return }
-            let tab = BrowserTab(configuration: configuration, downloadManager: self.downloadManager)
-            tab.onVisit = { [weak self] url, title in self?.recordVisit(url, title: title) }
+            let tab = BrowserTab(configuration: configuration, downloadManager: self.downloadManager, isPrivate: isPrivate, desktopMode: desktopMode)
+            if !isPrivate { tab.onVisit = { [weak self] url, title in self?.recordVisit(url, title: title) } }
             self.tabs.append(tab)
             if select || self.selectedID == nil { self.selectedID = tab.id }
             if let url { tab.load(url) }
@@ -195,7 +213,7 @@ final class BrowserStore: ObservableObject {
     /// loading with a previously selected proxy configuration. Page navigation
     /// stacks are intentionally not restored.
     func applyFeatureChanges() {
-        let pages = tabs.map { $0.webView.url }
+        let pages = tabs.map { (url: $0.webView.url, isPrivate: $0.isPrivate, desktop: $0.desktopMode) }
         let selectedIndex = tabs.firstIndex { $0.id == selectedID } ?? 0
         configurationGeneration = UUID()
         let generation = configurationGeneration
@@ -208,11 +226,12 @@ final class BrowserStore: ObservableObject {
         }
         tabs.removeAll()
         selectedID = nil
-        let urls: [URL?] = pages.isEmpty ? [nil] : pages
+        let restored = pages.isEmpty ? [(url: Optional<URL>.none, isPrivate: false, desktop: false)] : pages
         func restore(_ index: Int) {
             guard self.configurationGeneration == generation else { return }
-            guard index < urls.count else { self.isRebuilding = false; return }
-            self.addTab(url: urls[index], select: index == selectedIndex) { restore(index + 1) }
+            guard index < restored.count else { self.isRebuilding = false; return }
+            let page = restored[index]
+            self.addTab(url: page.url, select: index == selectedIndex, isPrivate: page.isPrivate, desktopMode: page.desktop) { restore(index + 1) }
         }
         restore(0)
     }
@@ -309,13 +328,14 @@ struct BrowserRootView: View {
     @State private var showLibrary = false
     @State private var showDownloads = false
     @State private var showSettings = false
+    @State private var showVideo = false
 
     var body: some View {
         Group {
             if let tab = store.selectedTab {
                 BrowserTabScreen(tab: tab, store: store,
                                  showTabs: $showTabs, showLibrary: $showLibrary,
-                                 showDownloads: $showDownloads, showSettings: $showSettings)
+                                 showDownloads: $showDownloads, showSettings: $showSettings, showVideo: $showVideo)
                     .id(tab.id)
             } else {
                 ProgressView()
@@ -325,6 +345,11 @@ struct BrowserRootView: View {
         .sheet(isPresented: $showLibrary) { BrowserLibrarySheet(store: store) }
         .sheet(isPresented: $showDownloads) { DownloadsView(manager: store.downloadManager) }
         .sheet(isPresented: $showSettings) { WebFeaturesView() }
+        .sheet(isPresented: $showVideo) {
+            if let tab = store.selectedTab {
+                VideoResourcesView(detector: tab.videoDetector, webView: tab.webView, downloadManager: store.downloadManager)
+            }
+        }
         .onReceive(NotificationCenter.default.publisher(for: .webFeaturesDidChange)) { _ in
             store.applyFeatureChanges()
         }
@@ -346,6 +371,7 @@ private struct BrowserTabScreen: View {
     @Binding var showLibrary: Bool
     @Binding var showDownloads: Bool
     @Binding var showSettings: Bool
+    @Binding var showVideo: Bool
     @State private var input = ""
     @FocusState private var addressFocused: Bool
 
@@ -403,6 +429,8 @@ private struct BrowserTabScreen: View {
                 Menu {
                     Button { showLibrary = true } label: { Label("书签与历史", systemImage: "book") }
                     Button { showDownloads = true } label: { Label("下载", systemImage: "arrow.down.circle") }
+                    Button { showVideo = true } label: { Label("媒体资源", systemImage: "play.rectangle") }
+                    Button { tab.toggleDesktopMode() } label: { Label(tab.desktopMode ? "请求移动版网站" : "请求桌面版网站", systemImage: "desktopcomputer") }
                     Button { showSettings = true } label: { Label("设置", systemImage: "gearshape") }
                     if let url = tab.webView.url { ShareLink(item: url) { Label("分享网页", systemImage: "square.and.arrow.up") } }
                 } label: { Image(systemName: "ellipsis.circle") }.accessibilityLabel("更多")
@@ -430,7 +458,7 @@ private struct BrowserTabsSheet: View {
                     HStack {
                         Button { store.selectedID = tab.id; dismiss() } label: {
                             VStack(alignment: .leading, spacing: 4) {
-                                Text(tab.title).lineLimit(1)
+                                Text(tab.isPrivate ? "无痕：\(tab.title)" : tab.title).lineLimit(1)
                                 Text(tab.address.isEmpty ? "新标签页" : tab.address).font(.caption).foregroundStyle(.secondary).lineLimit(1)
                             }.frame(maxWidth: .infinity, alignment: .leading)
                         }.buttonStyle(.plain)
@@ -441,9 +469,19 @@ private struct BrowserTabsSheet: View {
                 }
             }
             .navigationTitle("标签页")
+            .safeAreaInset(edge: .bottom) {
+                Text("无痕标签不保存浏览历史和网站数据；下载文件及手动保存的书签仍会保留。")
+                    .font(.footnote).foregroundStyle(.secondary)
+                    .padding(8).frame(maxWidth: .infinity).background(.regularMaterial)
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("完成") { dismiss() } }
-                ToolbarItem(placement: .primaryAction) { Button { store.addTab(); dismiss() } label: { Image(systemName: "plus") }.accessibilityLabel("新建标签页") }
+                ToolbarItem(placement: .primaryAction) {
+                    Menu {
+                        Button("新建标签页") { store.addTab(); dismiss() }
+                        Button("新建无痕标签页") { store.addTab(isPrivate: true); dismiss() }
+                    } label: { Image(systemName: "plus") }.accessibilityLabel("新建标签页")
+                }
             }
         }
     }

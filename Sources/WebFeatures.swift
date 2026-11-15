@@ -85,10 +85,7 @@ enum WebFeatures {
     /// has finished compiling so that the first page is not loaded unfiltered.
     static func configure(_ configuration: WKWebViewConfiguration, completion: @escaping () -> Void) {
         let settings = Settings.load()
-        if settings.scriptEnabled && !settings.script.isEmpty {
-            let script = WKUserScript(source: settings.script, injectionTime: .atDocumentEnd, forMainFrameOnly: true)
-            configuration.userContentController.addUserScript(script)
-        }
+        UserScripts.configure(configuration.userContentController)
         if #available(iOS 17.0, *) {
             if settings.proxyKind == .off {
                 configuration.websiteDataStore.proxyConfigurations = []
@@ -113,30 +110,7 @@ enum WebFeatures {
             }
         }
         guard settings.blocker else { completion(); return }
-        // A small built-in list, not an Adblock Plus/EasyList implementation.
-        let domains = ["doubleclick\\.net", "googlesyndication\\.com", "googleadservices\\.com"]
-        let patterns = domains.flatMap { domain in
-            ["^https?://" + domain + "/", "^https?://[a-z0-9.-]+\\." + domain + "/"]
-        }
-        let rule: [[String: Any]] = patterns.map { pattern in
-            ["trigger": ["url-filter": pattern], "action": ["type": "block"]]
-        }
-        guard let data = try? JSONSerialization.data(withJSONObject: rule),
-              let encoded = String(data: data, encoding: .utf8),
-              let store = WKContentRuleListStore.default() else {
-            UserDefaults.standard.set(true, forKey: Keys.blockerError)
-            completion()
-            return
-        }
-        let controller = configuration.userContentController
-        store.compileContentRuleList(forIdentifier: "basic-ad-domains-v1", encodedContentRuleList: encoded) { list, error in
-            DispatchQueue.main.async {
-                UserDefaults.standard.set(list == nil, forKey: Keys.blockerError)
-                if let list { controller.add(list) }
-                if let error { NSLog("Content filter unavailable: %@", error.localizedDescription) }
-                completion()
-            }
-        }
+        AdblockRules.compile(configuration: configuration, completion: completion)
     }
 }
 
@@ -151,7 +125,8 @@ struct WebFeaturesView: View {
             Form {
                 Section {
                     Toggle("基础广告拦截", isOn: $settings.blocker)
-                    Text("仅拦截少量内置广告域名，不支持完整的 WebShuttle 过滤规则。")
+                    NavigationLink("管理过滤规则") { AdblockRulesView() }
+                    Text("过滤规则支持情况和错误会在规则页面显示。")
                         .font(.footnote).foregroundStyle(.secondary)
                     if settings.blocker && blockerError {
                         Text("上次规则编译失败，广告拦截可能未生效。请重新打开标签页。")
@@ -171,13 +146,8 @@ struct WebFeaturesView: View {
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("自定义代理") }
                 Section {
-                    Toggle("启用自定义脚本", isOn: $settings.scriptEnabled)
-                    if settings.scriptEnabled {
-                        TextEditor(text: $settings.script)
-                            .font(.system(.body, design: .monospaced))
-                            .frame(minHeight: 160)
-                    }
-                    Text("脚本会在每个主页面运行并能读取页面内容。仅使用可信脚本；暂不支持油猴 GM 接口。")
+                    NavigationLink("管理用户脚本") { UserScriptsView() }
+                    Text("仅运行可信脚本；脚本可以读取和修改页面。")
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("用户脚本") }
             }
