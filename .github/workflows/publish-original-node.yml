@@ -1,0 +1,40 @@
+name: Publish original-node test IPA
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-original-node.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified build
+        uses: actions/download-artifact@v4
+        with:
+          name: BrowserPrototype-unsigned
+          run-id: 43687624589
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish test IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha256sum BrowserPrototype-unsigned.ipa > SHA256SUMS
+          cat > notes.md <<'NOTES'
+          实验性原节点代理测试版。它可选择和测试免费节点，并尝试通过本地 SOCKS 网关转发浏览器 TCP 请求。
+
+          在“设置 → 原节点连接诊断”中获取列表、测试节点，然后点“启用此节点（实验）”。回到浏览器后尝试访问网页。
+
+          - 网关认证、分片握手、双向转发和上游失败不直连已使用本地模拟节点测试；真实节点的网页转发与设备行为尚未验证。
+          - 原协议所见的异或处理不等同于可靠加密，不应依赖此应用保护隐私。WebRTC、DNS、UDP 和所有流量的代理覆盖未验证。
+          - 原会员、自动切换和 VPN 模式尚未完成；这不是 WebShuttle 完整移植。
+          - 未签名 IPA，需自行签名；需要 iOS 17 或以上。
+          - 构建与测试记录：https://github.com/Xieqiuyu823/webshuttle-ios-prototype/actions/runs/43687624589
+          NOTES
+          gh release create original-node-test-20261115 BrowserPrototype-unsigned.ipa SHA256SUMS \
+            --target e1c296e41d1692bd6c7480b5cdf34781c578c17f \
+            --title '原节点代理实验测试版' --notes-file notes.md --prerelease
