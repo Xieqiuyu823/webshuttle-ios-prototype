@@ -70,7 +70,7 @@ enum WebFeatures {
             return true
         }
 
-        func save() {
+        @MainActor func save() {
             let defaults = UserDefaults.standard
             defaults.set(blocker, forKey: Keys.blocker)
             defaults.set(scriptEnabled, forKey: Keys.scriptEnabled)
