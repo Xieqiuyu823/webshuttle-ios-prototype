@@ -15,6 +15,13 @@ jobs:
           command -v xcodegen >/dev/null || brew install xcodegen
       - name: Generate Xcode project
         run: xcodegen generate
+      - name: Test local proxy gateway
+        run: |
+          set -euo pipefail
+          xcrun swiftc -swift-version 5 -parse-as-library \
+            Sources/OriginalNodeGateway.swift tests/GatewayHarness.swift \
+            -o "$RUNNER_TEMP/gateway-harness"
+          GATEWAY_BIN="$RUNNER_TEMP/gateway-harness" python3 tests/test_gateway_integration.py
       - name: Build unsigned app
         run: |
           set -euo pipefail

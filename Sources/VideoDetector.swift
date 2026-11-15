@@ -118,8 +118,9 @@ struct VideoResourcesView: View {
                             }
                             HStack {
                                 Button {
+                                    let generation = downloadManager.configurationGeneration
                                     webView.startDownload(using: URLRequest(url: resource.url)) { download in
-                                        downloadManager.attach(download)
+                                        downloadManager.attach(download, expectedGeneration: generation)
                                     }
                                     dismiss()
                                 } label: { Label("下载文件", systemImage: "arrow.down.circle") }

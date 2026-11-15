@@ -7,8 +7,8 @@ extension Notification.Name {
     static let webFeaturesDidChange = Notification.Name("webFeaturesDidChange")
 }
 
-/// Settings here are independent from the original app's service. No WebShuttle
-/// nodes, account details or tunnel protocol are bundled with this prototype.
+/// Original-node mode uses the separately controlled local gateway. Its
+/// session key is never persisted with these preferences.
 @MainActor
 enum WebFeatures {
     private enum Keys {
@@ -22,13 +22,14 @@ enum WebFeatures {
     }
 
     enum ProxyKind: String, CaseIterable, Identifiable {
-        case off, http, socks5
+        case off, http, socks5, original
         var id: String { rawValue }
         var title: String {
             switch self {
             case .off: return "关闭"
             case .http: return "HTTP CONNECT"
             case .socks5: return "SOCKS5"
+            case .original: return "原网梭节点（实验）"
             }
         }
     }
@@ -56,7 +57,7 @@ enum WebFeatures {
         }
 
         var validProxy: Bool {
-            if proxyKind == .off { return true }
+            if proxyKind == .off || proxyKind == .original { return true }
             let host = proxyHost.trimmingCharacters(in: .whitespacesAndNewlines)
             guard !host.isEmpty, host == proxyHost, host.utf8.count <= 253,
                   let port = UInt16(proxyPort), port > 0 else { return false }
@@ -77,8 +78,15 @@ enum WebFeatures {
             defaults.set(proxyKind.rawValue, forKey: Keys.proxyKind)
             defaults.set(proxyHost, forKey: Keys.proxyHost)
             defaults.set(proxyPort, forKey: Keys.proxyPort)
+            if proxyKind != .original { OriginalNodeGateway.shared.stop() }
             NotificationCenter.default.post(name: .webFeaturesDidChange, object: nil)
         }
+    }
+
+    /// Updates only the mode, preserving edits made elsewhere in Settings.
+    static func activateOriginalNode() {
+        UserDefaults.standard.set(ProxyKind.original.rawValue, forKey: Keys.proxyKind)
+        NotificationCenter.default.post(name: .webFeaturesDidChange, object: nil)
     }
 
     /// Call before the initial load. `completion` runs after the content filter
@@ -92,18 +100,29 @@ enum WebFeatures {
             } else {
                 // If persisted settings are invalid, use an unreachable local
                 // endpoint instead of silently falling back to a direct connection.
-                let host = settings.validProxy ? settings.proxyHost : "127.0.0.1"
-                let rawPort = settings.validProxy ? UInt16(settings.proxyPort)! : 9
+                let host = settings.proxyKind == .original ? "127.0.0.1" : (settings.validProxy ? settings.proxyHost : "127.0.0.1")
+                // The original gateway is in-memory only. If it is unavailable
+                // (including after relaunch), remain in proxy mode with no
+                // direct failover, rather than reusing a stale port.
+                let gateway = OriginalNodeGateway.shared
+                let gatewayReady = gateway.isReady
+                let rawPort: UInt16 = settings.proxyKind == .original
+                    ? (gatewayReady ? (gateway.port ?? 9) : 9)
+                    : (settings.validProxy ? UInt16(settings.proxyPort)! : 9)
                 let endpoint = NWEndpoint.hostPort(host: NWEndpoint.Host(host), port: NWEndpoint.Port(rawValue: rawPort)!)
                 var proxy: ProxyConfiguration
                 switch settings.proxyKind {
                 case .http:
                     proxy = ProxyConfiguration(httpCONNECTProxy: endpoint, tlsOptions: nil)
-                case .socks5:
+                case .socks5, .original:
                     proxy = ProxyConfiguration(socksv5Proxy: endpoint)
                 case .off:
                     completion()
                     return
+                }
+                if settings.proxyKind == .original, gatewayReady,
+                   let username = gateway.username, let password = gateway.password {
+                    proxy.applyCredential(username: username, password: password)
                 }
                 proxy.allowFailover = false
                 configuration.websiteDataStore.proxyConfigurations = [proxy]
@@ -137,16 +156,22 @@ struct WebFeaturesView: View {
                     Picker("代理类型", selection: $settings.proxyKind) {
                         ForEach(WebFeatures.ProxyKind.allCases) { kind in Text(kind.title).tag(kind) }
                     }
-                    if settings.proxyKind != .off {
+                    if settings.proxyKind == .http || settings.proxyKind == .socks5 {
                         TextField("服务器地址", text: $settings.proxyHost)
                             .textInputAutocapitalization(.never).autocorrectionDisabled()
                         TextField("端口", text: $settings.proxyPort).keyboardType(.numberPad)
                     }
-                    Text("仅配置 WebKit 代理，需自行提供服务器。未验证下载、脚本网络、WebRTC 或 DNS 是否全部经过代理；这不是原网梭节点，也不能保证隐藏 IP。保存后所有标签会重新加载，标签内前进和后退历史会重置。")
+                    if settings.proxyKind == .original {
+                        Text(!OriginalNodeGateway.shared.isReady ? "原节点未运行。请在下方节点诊断中重新测试并启用；页面不会自动回退直连。" : "原节点网关正在运行；网页转发尚未完成真机验证。")
+                            .font(.footnote).foregroundStyle(.secondary)
+                        Text("原协议中发现的异或处理不等于可靠加密，不应依赖它保护隐私。")
+                            .font(.footnote).foregroundStyle(.orange)
+                    }
+                    Text("仅配置 WebKit 代理。未验证下载、脚本网络、WebRTC 或 DNS 是否全部经过代理，也不能保证隐藏 IP。保存后所有标签会重新加载，标签内前进和后退历史会重置。")
                         .font(.footnote).foregroundStyle(.secondary)
                 } header: { Text("自定义代理") }
                 Section {
-                    NavigationLink("原节点连接诊断") { OriginalNodeDiagnosticsView() }
+                    NavigationLink("选择和测试原节点") { OriginalNodeDiagnosticsView() }
                 } header: { Text("WebShuttle 原节点") }
                 Section {
                     NavigationLink("管理用户脚本") { UserScriptsView() }
@@ -155,6 +180,9 @@ struct WebFeaturesView: View {
                 } header: { Text("用户脚本") }
             }
             .navigationTitle("浏览设置")
+            .onReceive(NotificationCenter.default.publisher(for: .webFeaturesDidChange)) { _ in
+                settings.proxyKind = WebFeatures.Settings.load().proxyKind
+            }
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) { Button("取消") { dismiss() } }
                 ToolbarItem(placement: .confirmationAction) {

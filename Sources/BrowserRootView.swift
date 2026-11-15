@@ -20,10 +20,12 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     @Published var errorMessage: String?
     var onVisit: ((URL, String) -> Void)?
     private let downloadManager: DownloadManager
+    private let downloadGeneration: UUID
     private var observations: [NSKeyValueObservation] = []
 
     init(configuration: WKWebViewConfiguration, downloadManager: DownloadManager, isPrivate: Bool = false, desktopMode: Bool = false) {
         self.downloadManager = downloadManager
+        self.downloadGeneration = downloadManager.configurationGeneration
         self.isPrivate = isPrivate
         self.desktopMode = desktopMode
         let detector = VideoDetector()
@@ -59,6 +61,10 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func load(_ url: URL) {
+        if WebFeatures.Settings.load().proxyKind == .original && !OriginalNodeGateway.shared.isReady {
+            errorMessage = "原节点未连接。请在设置中重新测试并启用节点。"
+            return
+        }
         errorMessage = nil
         webView.load(URLRequest(url: url))
     }
@@ -95,6 +101,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                  preferences: WKWebpagePreferences,
                  decisionHandler: @escaping (WKNavigationActionPolicy, WKWebpagePreferences) -> Void) {
+        if WebFeatures.Settings.load().proxyKind == .original && !OriginalNodeGateway.shared.isReady {
+            errorMessage = "原节点未连接。请在设置中重新测试并启用节点。"
+            decisionHandler(.cancel, preferences)
+            return
+        }
         preferences.preferredContentMode = desktopMode ? .desktop : .mobile
         decisionHandler(navigationAction.shouldPerformDownload ? .download : .allow, preferences)
     }
@@ -108,11 +119,11 @@ final class BrowserTab: NSObject, ObservableObject, Identifiable, WKNavigationDe
     }
 
     func webView(_ webView: WKWebView, navigationAction: WKNavigationAction, didBecome download: WKDownload) {
-        downloadManager.attach(download)
+        downloadManager.attach(download, expectedGeneration: downloadGeneration)
     }
 
     func webView(_ webView: WKWebView, navigationResponse: WKNavigationResponse, didBecome download: WKDownload) {
-        downloadManager.attach(download)
+        downloadManager.attach(download, expectedGeneration: downloadGeneration)
     }
 
     private func presenter() -> UIViewController? {
@@ -352,6 +363,9 @@ struct BrowserRootView: View {
         }
         .onReceive(NotificationCenter.default.publisher(for: .webFeaturesDidChange)) { _ in
             store.applyFeatureChanges()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: Notification.Name("originalNodeGatewayDidStop"))) { _ in
+            if WebFeatures.Settings.load().proxyKind == .original { store.applyFeatureChanges() }
         }
         .overlay {
             if store.isRebuilding {

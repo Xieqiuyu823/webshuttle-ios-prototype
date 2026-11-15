@@ -21,6 +21,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
     }
 
     @Published private(set) var items: [Item] = []
+    private(set) var configurationGeneration = UUID()
     private struct ActiveDownload {
         let id: UUID
         let download: WKDownload
@@ -40,7 +41,11 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
 
     /// Retain this manager for the lifetime of the download. Call from either
     /// WKNavigationDelegate `didBecome` callback.
-    func attach(_ download: WKDownload) {
+    func attach(_ download: WKDownload, expectedGeneration: UUID) {
+        guard expectedGeneration == configurationGeneration else {
+            download.cancel { _ in }
+            return
+        }
         let key = ObjectIdentifier(download)
         guard active[key] == nil else { return }
         let id = UUID()
@@ -107,6 +112,7 @@ final class DownloadManager: NSObject, ObservableObject, WKDownloadDelegate {
     /// WebKit completes cancellation asynchronously; a request already in flight
     /// may not stop until its cancellation callback runs.
     func cancelAllForConfigurationChange() {
+        configurationGeneration = UUID()
         let entries = Array(active.values)
         active.removeAll()
         for entry in entries {

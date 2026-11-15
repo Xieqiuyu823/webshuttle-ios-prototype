@@ -2,7 +2,8 @@ import Foundation
 import Network
 import SwiftUI
 
-// Diagnostics only: this does not route browser traffic or assert tunnel security.
+// Node probing and explicit activation. A successful probe does not prove that
+// webpage forwarding, DNS, WebRTC, or privacy are working.
 @MainActor
 final class OriginalNodeDiagnostics: ObservableObject {
     struct Node: Identifiable, Decodable {
@@ -19,11 +20,16 @@ final class OriginalNodeDiagnostics: ObservableObject {
     @Published var nodes: [Node] = []
     @Published var message = "尚未获取节点。"
     @Published var results: [String: String] = [:]
+    @Published private(set) var readyNodes: Set<String> = []
+    @Published private(set) var activatingNodeID: String?
+    private var nodeKeys: [String: UInt8] = [:]
     private var connections: [String: NWConnection] = [:]
     private let fingerprint = "cb37a03c2a2d7439cadfffae2de254e9"
 
     func fetchNodes() {
         message = "正在获取官方节点列表…"
+        readyNodes.removeAll()
+        nodeKeys.removeAll()
         guard let url = URL(string: "https://srv.webshuttle.org/api/service_hash?country_code=US&language_code=en&channel_code=google&device_code=&density=1&version_code=725") else { return }
         URLSession.shared.dataTask(with: url) { [weak self] data, _, error in
             guard let data, error == nil, data.count < 1_000_000,
@@ -52,17 +58,23 @@ final class OriginalNodeDiagnostics: ObservableObject {
 
     func probe(_ node: Node) {
         guard let port = NWEndpoint.Port(rawValue: node.port) else { return }
+        readyNodes.remove(node.id)
+        nodeKeys.removeValue(forKey: node.id)
         connections[node.id]?.cancel()
         let connection = NWConnection(host: NWEndpoint.Host(node.host), port: port, using: .tcp)
         connections[node.id] = connection
         results[node.id] = "正在测试…"
         var done = false
-        func finish(_ text: String) {
+        func finish(_ text: String, key: UInt8? = nil) {
             guard !done else { return }
             done = true
             connection.cancel()
             guard connections[node.id] === connection else { return }
             connections[node.id] = nil
+            if let key {
+                nodeKeys[node.id] = key
+                readyNodes.insert(node.id)
+            }
             results[node.id] = text
         }
         func receive(_ accumulated: Data = Data()) {
@@ -72,7 +84,11 @@ final class OriginalNodeDiagnostics: ObservableObject {
                     if let content { bytes.append(content) }
                     if bytes.count == 12 {
                         let b = [UInt8](bytes)
-                        finish(b[0] == 12 && b[9] == 0 && b[10] < 128 ? "握手探测通过（尚未验证网页代理）" : "节点拒绝或响应不兼容")
+                        if b[0] == 12 && b[9] == 0 && b[10] < 128 {
+                            finish("握手探测通过；可尝试启用", key: b[10])
+                        } else {
+                            finish("节点拒绝或响应不兼容")
+                        }
                     } else if complete || error != nil { finish("连接关闭或握手失败") }
                     else { receive(bytes) }
                 }
@@ -102,6 +118,26 @@ final class OriginalNodeDiagnostics: ObservableObject {
         connection.start(queue: .main)
         DispatchQueue.main.asyncAfter(deadline: .now() + 8) { finish("连接超时") }
     }
+
+    func activate(_ node: Node) {
+        guard let key = nodeKeys[node.id], activatingNodeID == nil else { return }
+        activatingNodeID = node.id
+        results[node.id] = "正在启动本地网关…"
+        OriginalNodeGateway.shared.start(host: node.host, port: node.port, key: key) { [weak self] result in
+            guard let self else {
+                if case .success = result { OriginalNodeGateway.shared.stop() }
+                return
+            }
+            self.activatingNodeID = nil
+            switch result {
+            case .success:
+                WebFeatures.activateOriginalNode()
+                self.results[node.id] = "网关已启动；请返回浏览器测试网页"
+            case .failure:
+                self.results[node.id] = "网关启动失败；请重试"
+            }
+        }
+    }
 }
 
 struct OriginalNodeDiagnosticsView: View {
@@ -123,11 +159,15 @@ struct OriginalNodeDiagnosticsView: View {
                             Button("测试") { diagnostics.probe(node) }
                         }
                         Text(diagnostics.results[node.id] ?? "尚未测试").font(.caption).foregroundStyle(.secondary)
+                        if diagnostics.readyNodes.contains(node.id) {
+                            Button("启用此节点（实验）") { diagnostics.activate(node) }
+                                .disabled(diagnostics.activatingNodeID != nil)
+                        }
                     }
                 }
             }
             Section {
-                Text("这里只验证节点握手，浏览器尚未接入原节点。原协议所见的异或处理不等于可靠加密，不应依赖它保护隐私。")
+                Text("启用会切换浏览器到本地代理并重新加载标签。节点转发尚未真机验证；原协议所见的异或处理不等于可靠加密，不应依赖它保护隐私。重启后需重新测试并启用。")
                     .font(.footnote).foregroundStyle(.secondary)
             }
         }
