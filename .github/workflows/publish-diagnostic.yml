@@ -1,0 +1,36 @@
+name: Publish node diagnostic IPA
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/publish-diagnostic.yml]
+  workflow_dispatch:
+permissions:
+  actions: read
+  contents: write
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download diagnostic build
+        uses: actions/download-artifact@v4
+        with:
+          name: BrowserPrototype-unsigned
+          run-id: 43686749323
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish IPA
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          sha256sum BrowserPrototype-unsigned.ipa > SHA256SUMS
+          cat > notes.md <<'NOTES'
+          原节点握手诊断测试版，尚未实现通过原节点浏览网页。
+
+          在“设置 → 原节点连接诊断”中获取列表并测试。测试会连接原服务商的节点并发送 APK 版本与签名摘要；节点可看到你的网络地址。
+
+          IPA 未签名，需要自行签名安装。此版尚未真机验证，不应依赖它保护隐私。
+          NOTES
+          gh release create node-diagnostics-20261115 BrowserPrototype-unsigned.ipa SHA256SUMS \
+            --target df1561faeec3e26d9482f4824b897aae02413da5 \
+            --title 'WebShuttle iOS 节点诊断测试版' --notes-file notes.md --prerelease
